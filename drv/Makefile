@@ -18,8 +18,11 @@ endif
 endif
 
 DRIVER := it5570_hwmon
+GIT_COMMIT := $(shell git -C $(CURDIR)/.. rev-parse --short HEAD 2>/dev/null || echo none)
 
 obj-m := $(DRIVER).o
+$(DRIVER)-y := it5570_main.o it5570_core.o it5570_sensors.o
+ccflags-y += -DIT5570_DRIVER_REVISION=\"$(GIT_COMMIT)\"
 
 MAKEFLAGS += --no-print-directory
 
