@@ -8,3 +8,7 @@
 /modules.order
 
 /.idea
+
+/tmp
+
+.sisyphus
