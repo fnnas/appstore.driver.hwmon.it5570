@@ -106,9 +106,9 @@ done
 
 驱动分为探测/传输选择、底层 SuperIO/D2EC 访问、以及 hwmon/sysfs 暴露三层。`it5570_main.c` 负责模块参数、platform device/driver 生命周期、SuperIO 端口探测、LDN 枚举和传输路径选择。`it5570_core.c` 放共享查找表、日志封装、SuperIO 访问、D2EC 字节读写和可选 ACPI 诊断。`it5570_sensors.c` 负责 hwmon 注册、标准传感器读回、raw debug sysfs 节点、EC 寄存器到电压/RPM/PWM 占空比的换算。`it5570_hwmon.h` 集中保存寄存器定义、枚举、共享状态结构和跨文件函数声明。
 
-当前真实传感器路径以 `d2ec` 为准。`transport=auto` 默认优先选择 D2EC；`smfi`、`pmc*`、`peci` 分支仍用于识别、探测和日志说明，但当前不提供真实 EC RAM 传感器读写能力。不要让不支持的传输路径伪造传感器值；无法提供真实读数时应保持错误/跳过语义。
+当前真实传感器路径以 `d2ec` 为准。`transport=auto` 默认优先选择 D2EC；`smfi`、`pmc*`、`peci` 分支仍用于识别、探测和日志说明，但当前不提供真实 EC RAM 传感器读写能力，也不应被当作可用 hwmon 传输后端。不要让不支持的传输路径伪造传感器值；无法提供真实读数时应保持错误/跳过语义。
 
-D2EC 访问通过探测到的 IT5570 SuperIO 配置端口进行。驱动写入 EC RAM 地址到 Depth-2 地址寄存器，再通过 `I2EC_DATA` 读取数据。使用的 EC RAM 窗口主要是 `0x1800` 的 PWM/风扇 tach 寄存器和 `0x1900` 的 ADC 结果/状态寄存器。`struct it5570_hwmon_data` 中的 `io_lock` 用于串行化底层 I/O，避免并发 sysfs 读取交叉污染地址/数据事务。
+D2EC 访问通过探测到的 IT5570 SuperIO 配置端口进行。当前代码路径实际是通过 PNPCFG `D2ADR/D2DAT` 的 Depth-2 子地址空间访问 `I2EC_ADDR_L` / `I2EC_ADDR_H` / `I2EC_DATA`，再读取 EC RAM。使用的 EC RAM 窗口主要是 `0x1800` 的 PWM/风扇 tach 寄存器和 `0x1900` 的 ADC 结果/状态寄存器。`struct it5570_hwmon_data` 中的 `io_lock` 用于串行化底层 I/O，避免并发 sysfs 读取交叉污染地址/数据事务。
 
 标准 hwmon 节点包括 `in0_input..in7_input`、`fan1_input..fan3_input`、`pwm1..pwm8`。PWM 相关节点当前是只读观测接口；raw debug 节点也只读，用来把芯片文档寄存器、板级布线和实机行为对应起来。不要重新引入 `allow_pwm_write`、raw store handler 或标准 PWM 写入路径，除非用户明确要求重新设计写入能力。
 
@@ -116,7 +116,7 @@ PWM 读回不是固定读取单一周期寄存器。`it5570_sensors.c` 会根据
 
 风扇 tach 读取使用 LSB/MSB 成对寄存器，并按文档保留 raw 计数为 0 时的停转语义。`fanN` 和 `pwmN` 不保证板级上一一对应，驱动不应伪造这种映射；需要通过 raw 节点和实机观察确认实际布线。
 
-电压输入来自 ADC EC view，按 10 位 ADC 原始值和默认 3.0V ADC 参考电压换算成毫伏。新增寄存器换算时，应优先查 `docs/IT5570_A_V0.3.1_U.md`，并在相关代码附近保留必要的文档公式或寄存器语义说明。
+电压输入来自 ADC EC view，按 10 位 ADC 原始值和默认 3.0V ADC 参考电压换算成毫伏。按手册语义，驱动读取有效 ADC 数据后会写 `ADCDVSTS` 的对应 R/WC 位来消费当前转换状态；不要把这类内部状态确认写入和 sysfs 可写控制接口混为一谈。新增寄存器换算时，应优先查 `docs/IT5570_A_V0.3.1_U.md`，并在相关代码附近保留必要的文档公式或寄存器语义说明。
 
 ## 重要约束
 

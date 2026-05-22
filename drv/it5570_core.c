@@ -39,7 +39,6 @@ static const char * const it5570_transport_names[] = {
 static const struct it5570_fault_desc it5570_fault_table[] = {
 	{ IT5570_FAULT_NONE, "none" },
 	{ IT5570_FAULT_ID_MISMATCH, "id_mismatch" },
-	{ IT5570_FAULT_SMFI_UNSTABLE, "smfi_unstable" },
 	{ IT5570_FAULT_REG_ACCESS_FAIL, "reg_access_fail" },
 };
 
@@ -119,6 +118,7 @@ const char *it5570_reason_name(enum it5570_reason_token reason)
 		{ IT5570_REASON_PORT_UNREACHABLE, "port-unreachable" },
 		{ IT5570_REASON_LDA_DISABLED, "lda-disabled" },
 		{ IT5570_REASON_IOBAD_ZERO, "iobad-zero" },
+		{ IT5570_REASON_SIO_DISABLED, "sio-disabled" },
 		{ IT5570_REASON_RESOURCE_CONFLICT, "resource-conflict" },
 		{ IT5570_REASON_UNSTABLE_READ, "unstable-read" },
 		{ IT5570_REASON_REG_ACCESS_FAILED, "reg-access-failed" },
@@ -170,7 +170,8 @@ void it5570_log_ldn(struct device *dev, u8 ldn, u8 lda, u16 iobad,
 		    const char *status)
 {
 	if (!strcmp(status, it5570_reason_name(IT5570_REASON_LDA_DISABLED)) ||
-	    !strcmp(status, it5570_reason_name(IT5570_REASON_IOBAD_ZERO))) {
+	    !strcmp(status, it5570_reason_name(IT5570_REASON_IOBAD_ZERO)) ||
+	    !strcmp(status, it5570_reason_name(IT5570_REASON_SIO_DISABLED))) {
 		IT5570_LOG_WARN(dev,
 				"stage=probe event=ldn ldn=0x%02x lda=0x%02x iobad=0x%04x status=%s\n",
 				ldn, lda, iobad, status);
@@ -204,6 +205,12 @@ void it5570_log_transport_selected(struct device *dev,
 				   const struct it5570_transport_branch_desc *branch,
 				   u16 iobad)
 {
+	if (branch->mode == IT5570_TRANSPORT_D2EC) {
+		IT5570_LOG_STAGE(dev, "transport", "selected",
+				 "branch=%s sio_port=0x%02x\n", branch->name, iobad);
+		return;
+	}
+
 	IT5570_LOG_STAGE(dev, "transport", "selected",
 			 "branch=%s ldn=0x%02x iobad=0x%04x\n",
 			 branch->name, branch->ldn, iobad);

@@ -16,7 +16,7 @@ MODULE_PARM_DESC(transport, "auto|d2ec|smfi|pmc1|pmc2|pmc3|pmc4|pmc5|peci|off");
 
 static char *fault_inject = "none";
 module_param(fault_inject, charp, 0444);
-MODULE_PARM_DESC(fault_inject, "none|id_mismatch|smfi_unstable|reg_access_fail");
+MODULE_PARM_DESC(fault_inject, "none|id_mismatch|reg_access_fail");
 
 static bool probe_acpi;
 module_param(probe_acpi, bool, 0644);
@@ -58,8 +58,6 @@ static enum it5570_fault_inject_mode it5570_fault_mode_from_param(void)
 		return IT5570_FAULT_NONE;
 	if (!strcmp(fault_inject, "id_mismatch"))
 		return IT5570_FAULT_ID_MISMATCH;
-	if (!strcmp(fault_inject, "smfi_unstable"))
-		return IT5570_FAULT_SMFI_UNSTABLE;
 	if (!strcmp(fault_inject, "reg_access_fail"))
 		return IT5570_FAULT_REG_ACCESS_FAIL;
 
@@ -139,6 +137,7 @@ static int it5570_enumerate_ldns(struct device *dev, unsigned short sio_port)
 		IT5570_LDN_PMC4,
 		IT5570_LDN_PMC5,
 	};
+	u8 sioctrl;
 	int ret;
 	int i;
 
@@ -146,23 +145,27 @@ static int it5570_enumerate_ldns(struct device *dev, unsigned short sio_port)
 	if (ret)
 		return ret;
 
+	sioctrl = it5570_superio_read8(sio_port, IT5570_REG_SIOCTRL);
+
 	for (i = 0; i < ARRAY_SIZE(probe_ldns); i++) {
+		u8 ldn = probe_ldns[i];
 		u8 lda;
-		u16 iobad;
+		u16 iobad = 0;
 		const char *status;
 
-		it5570_superio_select_ldn(sio_port, probe_ldns[i]);
+		it5570_superio_select_ldn(sio_port, ldn);
 		lda = it5570_superio_read8(sio_port, IT5570_REG_LDA);
-		iobad = it5570_superio_read16(sio_port, IT5570_REG_IOBAD0_MSB);
 
-		if (!(lda & 0x01))
+		if (!(lda & 0x01)) {
 			status = it5570_reason_name(IT5570_REASON_LDA_DISABLED);
-		else if (!iobad)
-			status = it5570_reason_name(IT5570_REASON_IOBAD_ZERO);
-		else
-			status = "ok";
+		} else if (ldn != IT5570_LDN_SMFI && !(sioctrl & IT5570_SIOCTRL_SIOEN)) {
+			status = it5570_reason_name(IT5570_REASON_SIO_DISABLED);
+		} else {
+			iobad = it5570_superio_read16(sio_port, IT5570_REG_IOBAD0_MSB);
+			status = iobad ? "ok" : it5570_reason_name(IT5570_REASON_IOBAD_ZERO);
+		}
 
-		it5570_log_ldn(dev, probe_ldns[i], lda, iobad, status);
+		it5570_log_ldn(dev, ldn, lda, iobad, status);
 	}
 
 	it5570_superio_release(sio_port);
@@ -170,168 +173,38 @@ static int it5570_enumerate_ldns(struct device *dev, unsigned short sio_port)
 	return 0;
 }
 
-static bool it5570_smfi_snapshots_match(
-	const struct it5570_smfi_snapshot *first,
-	const struct it5570_smfi_snapshot *second)
+static int it5570_evaluate_unsupported_transport(struct it5570_hwmon_data *data,
+						 const struct it5570_transport_branch_desc *branch,
+						 bool forced)
 {
-	return first->lda == second->lda &&
-	       first->iobad_msb == second->iobad_msb &&
-	       first->iobad_lsb == second->iobad_lsb;
-}
-
-static bool it5570_smfi_validate_snapshot(const struct it5570_smfi_snapshot *snapshot,
-					  enum it5570_reason_token *reason)
-{
-	u16 iobad = ((u16)snapshot->iobad_msb << 8) | snapshot->iobad_lsb;
-
-	if (!(snapshot->lda & 0x01)) {
-		*reason = IT5570_REASON_LDA_DISABLED;
-		return false;
-	}
-
-	if (!iobad) {
-		*reason = IT5570_REASON_IOBAD_ZERO;
-		return false;
-	}
-
-	return true;
-}
-
-static int it5570_smfi_read_stable_snapshot(struct it5570_hwmon_data *data,
-					    struct it5570_smfi_snapshot *snapshot)
-{
-	struct it5570_smfi_snapshot passes[3];
-	int pass;
-
-	for (pass = 0; pass < ARRAY_SIZE(passes); pass++) {
-		passes[pass].lda = it5570_superio_read8(data->sio_port, IT5570_REG_LDA);
-		passes[pass].iobad_msb = it5570_superio_read8(data->sio_port,
-							      IT5570_REG_IOBAD0_MSB);
-		passes[pass].iobad_lsb = it5570_superio_read8(data->sio_port,
-							      IT5570_REG_IOBAD0_LSB);
-
-		if (data->fault_mode == IT5570_FAULT_SMFI_UNSTABLE && pass == 1) {
-			passes[pass].iobad_lsb ^= 0x01;
-			it5570_log_fault_inject(data->dev, data->fault_mode);
-		}
-	}
-
-	if (!it5570_smfi_snapshots_match(&passes[0], &passes[1]) ||
-	    !it5570_smfi_snapshots_match(&passes[0], &passes[2]))
-		return -EIO;
-
-	*snapshot = passes[0];
-
-	return 0;
-}
-
-static int it5570_evaluate_smfi_transport(struct it5570_hwmon_data *data,
-					  bool forced)
-{
-	const struct it5570_transport_branch_desc *branch;
-	struct it5570_smfi_snapshot snapshot;
-	enum it5570_reason_token reason;
-	u16 iobad;
-	int ret;
-
-	branch = it5570_transport_branch_desc_lookup(IT5570_TRANSPORT_SMFI);
-	if (!branch)
-		return -EINVAL;
-
 	it5570_log_transport_evaluating(data->dev, branch, forced);
-	it5570_transport_state_clear(data, IT5570_REASON_NO_USABLE_TRANSPORT);
+	it5570_transport_state_clear(data, IT5570_REASON_TRANSPORT_UNSUPPORTED);
+	it5570_log_transport_rejected(data->dev, branch,
+				      IT5570_REASON_TRANSPORT_UNSUPPORTED);
 
-	ret = it5570_superio_request(data->sio_port);
-	if (ret) {
-		reason = IT5570_REASON_RESOURCE_CONFLICT;
-		goto reject;
-	}
-
-	it5570_superio_select_ldn(data->sio_port, branch->ldn);
-	ret = it5570_smfi_read_stable_snapshot(data, &snapshot);
-	it5570_superio_release(data->sio_port);
-	if (ret < 0) {
-		reason = IT5570_REASON_UNSTABLE_READ;
-		goto reject;
-	}
-
-	if (!it5570_smfi_validate_snapshot(&snapshot, &reason))
-		goto reject;
-
-	iobad = ((u16)snapshot.iobad_msb << 8) | snapshot.iobad_lsb;
-	it5570_transport_state_select(data, branch, iobad);
-	it5570_log_transport_selected(data->dev, branch, iobad);
-
-	return 0;
-
-reject:
-	it5570_transport_state_clear(data, reason);
-	it5570_log_transport_rejected(data->dev, branch, reason);
 	if (forced) {
 		it5570_log_transport_abort(data->dev, branch,
-					   IT5570_REASON_FORCED_TRANSPORT_FAILED);
-		return -ENODEV;
+						   IT5570_REASON_TRANSPORT_UNSUPPORTED);
+		return -EOPNOTSUPP;
 	}
 
 	return 0;
 }
 
-static int it5570_evaluate_fallback_transport(struct it5570_hwmon_data *data,
-					      const struct it5570_transport_branch_desc *branch,
-					      bool forced)
+static int it5570_validate_d2ec_transport(struct it5570_hwmon_data *data,
+					       const struct it5570_transport_branch_desc *branch,
+					       enum it5570_reason_token *reason)
 {
-	u16 iobad;
+	u8 value;
 	int ret;
 
-	it5570_log_transport_evaluating(data->dev, branch, forced);
-
-	ret = it5570_superio_request(data->sio_port);
+	it5570_transport_state_select(data, branch, data->sio_port);
+	ret = it5570_transport_read8(data, IT5570_EC_REG_ADCDVSTS, &value);
 	if (ret) {
-		it5570_transport_state_clear(data, IT5570_REASON_RESOURCE_CONFLICT);
-		it5570_log_transport_rejected(data->dev, branch,
-					      IT5570_REASON_RESOURCE_CONFLICT);
-		if (forced) {
-			it5570_log_transport_abort(data->dev, branch,
-						   IT5570_REASON_FORCED_TRANSPORT_FAILED);
-			return -ENODEV;
-		}
-
-		return 0;
+		*reason = it5570_read_reason_from_errno(ret);
+		it5570_transport_state_clear(data, *reason);
+		return ret;
 	}
-
-	it5570_superio_select_ldn(data->sio_port, branch->ldn);
-	iobad = it5570_superio_read16(data->sio_port, IT5570_REG_IOBAD0_MSB);
-	ret = it5570_superio_read8(data->sio_port, IT5570_REG_LDA);
-	it5570_superio_release(data->sio_port);
-
-	if (!(ret & 0x01)) {
-		it5570_transport_state_clear(data, IT5570_REASON_LDA_DISABLED);
-		it5570_log_transport_rejected(data->dev, branch,
-					      IT5570_REASON_LDA_DISABLED);
-		if (forced) {
-			it5570_log_transport_abort(data->dev, branch,
-						   IT5570_REASON_FORCED_TRANSPORT_FAILED);
-			return -ENODEV;
-		}
-
-		return 0;
-	}
-
-	if (!iobad) {
-		it5570_transport_state_clear(data, IT5570_REASON_IOBAD_ZERO);
-		it5570_log_transport_rejected(data->dev, branch,
-					      IT5570_REASON_IOBAD_ZERO);
-		if (forced) {
-			it5570_log_transport_abort(data->dev, branch,
-						   IT5570_REASON_FORCED_TRANSPORT_FAILED);
-			return -ENODEV;
-		}
-
-		return 0;
-	}
-
-	it5570_transport_state_select(data, branch, iobad);
-	it5570_log_transport_selected(data->dev, branch, iobad);
 
 	return 0;
 }
@@ -340,6 +213,7 @@ static int it5570_evaluate_d2ec_transport(struct it5570_hwmon_data *data,
 					  const struct it5570_transport_branch_desc *branch,
 					  bool forced)
 {
+	enum it5570_reason_token reason;
 	int ret;
 
 	it5570_log_transport_evaluating(data->dev, branch, forced);
@@ -351,7 +225,7 @@ static int it5570_evaluate_d2ec_transport(struct it5570_hwmon_data *data,
 					      IT5570_REASON_RESOURCE_CONFLICT);
 		if (forced) {
 			it5570_log_transport_abort(data->dev, branch,
-						   IT5570_REASON_FORCED_TRANSPORT_FAILED);
+							   IT5570_REASON_FORCED_TRANSPORT_FAILED);
 			return -ENODEV;
 		}
 
@@ -359,7 +233,20 @@ static int it5570_evaluate_d2ec_transport(struct it5570_hwmon_data *data,
 	}
 
 	it5570_superio_release(data->sio_port);
-	it5570_transport_state_select(data, branch, data->sio_port);
+
+	reason = IT5570_REASON_NO_USABLE_TRANSPORT;
+	ret = it5570_validate_d2ec_transport(data, branch, &reason);
+	if (ret) {
+		it5570_log_transport_rejected(data->dev, branch, reason);
+		if (forced) {
+			it5570_log_transport_abort(data->dev, branch,
+							   IT5570_REASON_FORCED_TRANSPORT_FAILED);
+			return ret;
+		}
+
+		return 0;
+	}
+
 	it5570_log_transport_selected(data->dev, branch, data->sio_port);
 
 	return 0;
@@ -394,26 +281,14 @@ static int it5570_select_transport(struct it5570_hwmon_data *data)
 			continue;
 		}
 
-		if (branch->mode == IT5570_TRANSPORT_SMFI)
-			ret = it5570_evaluate_smfi_transport(data, forced);
-		else if (branch->mode == IT5570_TRANSPORT_D2EC)
+		if (branch->mode == IT5570_TRANSPORT_D2EC)
 			ret = it5570_evaluate_d2ec_transport(data, branch, forced);
 		else
-			ret = it5570_evaluate_fallback_transport(data, branch, forced);
+			ret = it5570_evaluate_unsupported_transport(data, branch, forced);
 
 		if (ret)
 			return ret;
 
-		if (data->transport_state.ready &&
-		    data->transport_state.mode != IT5570_TRANSPORT_D2EC) {
-			it5570_transport_state_clear(data, IT5570_REASON_TRANSPORT_UNSUPPORTED);
-			if (forced) {
-				it5570_log_transport_abort(data->dev, branch,
-							   IT5570_REASON_TRANSPORT_UNSUPPORTED);
-				return -EOPNOTSUPP;
-			}
-			continue;
-		}
 
 		if (data->transport_state.ready)
 			return 0;

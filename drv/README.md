@@ -89,7 +89,7 @@ stage=hwmon event=register status=ready transport=d2ec
 auto|d2ec|smfi|pmc1|pmc2|pmc3|pmc4|pmc5|peci|off
 ```
 
-推荐使用 `auto`。当前它会优先尝试 `d2ec`，因为这是已经验证过的真实传感器访问路径；当未指定 `transport` 时，这也是默认值。
+推荐使用 `auto`。当前它会优先尝试 `d2ec`，因为这是已经验证过的真实传感器访问路径；当未指定 `transport` 时，这也是默认值。`smfi`、`pmc*` 和 `peci` 参数值仍保留用于诊断和显式失败路径测试，但当前不会作为可用的 hwmon 传输后端。
 
 `probe_acpi`
 
@@ -100,7 +100,7 @@ auto|d2ec|smfi|pmc1|pmc2|pmc3|pmc4|pmc5|peci|off
 仅用于测试的负路径控制：
 
 ```text
-none|id_mismatch|smfi_unstable|reg_access_fail
+none|id_mismatch|reg_access_fail
 ```
 
 正常运行时不要启用 fault injection。
@@ -236,6 +236,13 @@ cat "$h"/pwm*_dcr_raw "$h"/pwm_clock_src_sel_low_raw "$h"/pwm_clock_src_sel_high
 
 驱动会暴露一组只读 raw 调试节点，帮助你把文档寄存器和板级行为对应起来。典型包括：
 
+- `pwm1_cpr_raw` 对应手册 prescaler group 0 的 `C0CPRS`
+- `pwm_group4_cpr_raw` / `pwm_group4_cpr_msb_raw` 对应手册 prescaler group 1 的 `C4CPRS/C4MCPRS`
+- `pwm_group6_cpr_raw` / `pwm_group6_cpr_msb_raw` 对应手册 prescaler group 2 的 `C6CPRS/C6MCPRS`
+- `pwm_group7_cpr_raw` / `pwm_group7_cpr_msb_raw` 对应手册 prescaler group 3 的 `C7CPRS/C7MCPRS`
+- 上述名称里的 `4/6/7` 来自寄存器名，不是 `PCSSGL/PCSSGH` 的 selector group 编号
+
+
 ```text
 fan1_tach_raw / fan2_tach_raw / fan3_tach_raw
 pwm1_dcr_raw .. pwm8_dcr_raw
@@ -265,7 +272,7 @@ pwm2_led_enable_raw / pwm2_led_ctrl1_raw / pwm2_led_ctrl2_raw
 
 ## 硬件访问说明
 
-D2EC 访问使用的是探测阶段发现的 IT5570 SuperIO 配置端口。驱动会通过 Depth-2 寄存器写入 EC RAM 地址，再通过 `I2EC_DATA` 读取数据。
+D2EC 访问使用的是探测阶段发现的 IT5570 SuperIO 配置端口。当前代码路径实际是通过 PNPCFG `D2ADR/D2DAT` 的 Depth-2 子地址空间访问 `I2EC_ADDR_L` / `I2EC_ADDR_H` / `I2EC_DATA`，再读取 EC RAM。
 
 该驱动使用的 EC RAM 窗口如下：
 
@@ -274,7 +281,7 @@ D2EC 访问使用的是探测阶段发现的 IT5570 SuperIO 配置端口。驱�
 0x1900  ADC 结果和 ADC 有效状态寄存器
 ```
 
-驱动内部会串行化 D2EC 事务，避免并发 sysfs 读取时发生地址/数据访问交叉。标准 `pwmN` 和 raw/debug 节点当前都是只读观测接口，不会通过 sysfs 修改 duty、频率、时钟源、分组、极性、open-drain 或 TACH source 选择。
+驱动内部会串行化 D2EC 事务，避免并发 sysfs 读取时发生地址/数据访问交叉。标准 `pwmN` 和 raw/debug 节点当前都是只读观测接口，不会通过 sysfs 修改 duty、频率、时钟源、分组、极性、open-drain 或 TACH source 选择。电压读取过程中，驱动仍会按手册定义写 `ADCDVSTS` 的对应 R/WC 位来消费当前转换状态；这属于 ADC 状态确认流程，不是用户可控的 sysfs 写接口。
 
 ## 调试
 
