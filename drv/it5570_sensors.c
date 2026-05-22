@@ -91,7 +91,7 @@ static const struct it5570_ec_reg_span it5570_voltage_reg_spans[] = {
 /*
  * Datasheet 7.12.4.15/.17/.29 notes that each tachometer is exposed as an
  * LSB/MSB register pair. It also warns that D2EC/I2EC reads are not guaranteed
- * atomic, so runtime reads sample the pair twice while preserving the
+ * atomic, so runtime reads prefer repeated stable samples while preserving the
  * documented zero-count stopped-fan state.
  */
 static const struct it5570_ec_reg_span it5570_tach_reg_spans[] = {
@@ -710,10 +710,18 @@ static int it5570_read_tach_raw_channel(struct it5570_hwmon_data *data,
 	if (ret)
 		return ret;
 
-	/* D2EC/I2EC tach pair reads are not atomic; zero is still a valid stopped-fan count. */
-	(void)first;
+	/* Prefer a stable repeated sample, but keep zero as a valid stopped-fan count. */
+	if (first == second) {
+		*value = second;
+		return 0;
+	}
 
-	*value = second;
+	ret = it5570_transport_read16(data, span, "tach", channel->name,
+					       &first, &status);
+	if (ret)
+		return ret;
+
+	*value = first == second ? second : first;
 
 	return 0;
 }

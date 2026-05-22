@@ -320,7 +320,7 @@ void it5570_log_io_error(const struct it5570_hwmon_data *data, const char *op,
 static void it5570_log_acpi_object(struct device *dev, const char *event,
 				   const char *path, union acpi_object *obj)
 {
-	u32 len;
+	int len;
 
 	if (!obj) {
 		IT5570_LOG_WARN(dev,
@@ -358,7 +358,8 @@ static void it5570_log_acpi_package_elements(struct device *dev, const char *eve
 					     const char *path, union acpi_object *obj)
 {
 	union acpi_object *element;
-	u32 i, len;
+	int len;
+	u32 i;
 
 	if (!obj || obj->type != ACPI_TYPE_PACKAGE)
 		return;

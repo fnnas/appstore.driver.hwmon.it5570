@@ -404,6 +404,17 @@ static int it5570_select_transport(struct it5570_hwmon_data *data)
 		if (ret)
 			return ret;
 
+		if (data->transport_state.ready &&
+		    data->transport_state.mode != IT5570_TRANSPORT_D2EC) {
+			it5570_transport_state_clear(data, IT5570_REASON_TRANSPORT_UNSUPPORTED);
+			if (forced) {
+				it5570_log_transport_abort(data->dev, branch,
+							   IT5570_REASON_TRANSPORT_UNSUPPORTED);
+				return -EOPNOTSUPP;
+			}
+			continue;
+		}
+
 		if (data->transport_state.ready)
 			return 0;
 	}
