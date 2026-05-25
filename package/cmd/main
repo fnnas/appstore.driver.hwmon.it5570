@@ -1,108 +1,166 @@
 #!/bin/bash
 
-LOG_FILE="${TRIM_PKGVAR}/info.log"
-PID_FILE="${TRIM_PKGVAR}/app.pid"
+LOG_FILE="${TRIM_PKGVAR:-/tmp}/info.log"
+PACKAGE_BASE="${TRIM_APPDEST:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
-# write the command to start your program here 
-CMD=""
+PROJ_NAME="appstore.driver.hwmon.it5570"
+MODULE_NAME="it5570_hwmon"
+MODULE_FILE="${MODULE_NAME}.ko"
+EXPECTED_REVISION="this_pack_driver_revision"
+SUPPORTED_KERNEL_VER="6.18.18-trim"
 
 log_msg() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> ${LOG_FILE}
+    local msg="$1"
+    local line
+
+    line="$(date '+%Y-%m-%d %H:%M:%S') - ${msg}"
+    echo "${line}"
+    mkdir -p "$(dirname "${LOG_FILE}")"
+    echo "${line}" >> "${LOG_FILE}"
 }
 
-start_process() {
-    if status; then
+report_error() {
+    local msg="$1"
+
+    log_msg "${msg}"
+    if [[ -n "${TRIM_TEMP_LOGFILE:-}" ]]; then
+        mkdir -p "$(dirname "${TRIM_TEMP_LOGFILE}")"
+        printf "%s\n" "${msg}" > "${TRIM_TEMP_LOGFILE}"
+    fi
+}
+
+module_loaded() {
+    lsmod | awk '{print $1}' | grep -qx "${MODULE_NAME}"
+}
+
+print_recent_dmesg() {
+    log_msg "Recent dmesg tail"
+    dmesg | tail -n 20 || true
+}
+
+kernel_build_num() {
+    uname -v | sed -n 's/.*#\([0-9][0-9]*\).*/\1/p' | head -n 1
+}
+
+package_module_file() {
+    local kernel_ver
+    local build_num
+    local build_tag
+    local arch
+
+    kernel_ver="$(uname -r)"
+    build_num="$(kernel_build_num)"
+
+    if [[ "${kernel_ver}" != "${SUPPORTED_KERNEL_VER}" ]]; then
+        report_error "Unsupported kernel version: ${kernel_ver}; supported: ${SUPPORTED_KERNEL_VER}"
+        return 1
+    fi
+    if [[ ! "${build_num}" =~ ^[0-9]+$ ]]; then
+        report_error "Unsupported kernel build number for ${kernel_ver}: ${build_num}"
+        return 1
+    fi
+
+    if (( build_num < 570 )); then
+        build_tag="427"
+    elif (( build_num < 587 )); then
+        build_tag="570"
+    else
+        build_tag="587"
+    fi
+
+    case "$(uname -m)" in
+    x86_64 | amd64) arch="amd64" ;;
+    aarch64 | arm64) arch="arm64" ;;
+    *)
+        report_error "Unsupported architecture: $(uname -m)"
+        return 1
+        ;;
+    esac
+
+    echo "${PACKAGE_BASE}/app/${PROJ_NAME}_${kernel_ver}-${build_tag}-${arch}/${MODULE_FILE}"
+}
+
+verify_module_file() {
+    local module_file="$1"
+    local revision
+
+    if [[ ! -f "${module_file}" ]]; then
+        report_error "Package module not found: ${module_file}"
+        return 1
+    fi
+
+    revision="$(modinfo -F revision "${module_file}" 2>/dev/null)" || {
+        report_error "Unable to read module revision from ${module_file}"
+        return 1
+    }
+    if [[ "${revision}" != "${EXPECTED_REVISION}" ]]; then
+        report_error "Unexpected module revision: ${revision}; expected: ${EXPECTED_REVISION}"
+        return 1
+    fi
+}
+
+load_module() {
+    local module_file
+
+    if module_loaded; then
+        log_msg "${MODULE_NAME} is already loaded"
         return 0
     fi
 
-    log_msg "Starting process ..."
-    # run cmd to start process
-    bash -c "${CMD}" >> ${LOG_FILE} 2>&1 &
-    # write pid to pidfile
-    printf "%s" "$!" > ${PID_FILE}
-    # log_msg "CMD = ${CMD}"
-    # log_msg "pid = $!"
-    return 0
+    module_file="$(package_module_file)" || return 1
+    verify_module_file "${module_file}" || return 1
+
+    log_msg "Loading ${MODULE_NAME} from ${module_file}"
+    insmod "${module_file}" || {
+        report_error "Failed to load ${MODULE_NAME} from ${module_file}"
+        print_recent_dmesg
+        return 1
+    }
+    print_recent_dmesg
 }
 
-stop_process() {
-    log_msg "Stopping process ..."
-
-    if [ -r "${PID_FILE}" ]; then
-        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
-        
-        log_msg "pid=${pid}"
-        if ! check_process "${pid}"; then
-            # process not exist, delete pidfile
-            rm -f "${PID_FILE}"
-            log_msg "remove pid file 1"
-            return
-        fi
-
-        log_msg "send TERM signal to PID:${pid}..."
-        kill -TERM ${pid} >> ${LOG_FILE} 2>&1
-
-        local count=0
-        while check_process "${pid}" && [ $count -lt 10 ]; do
-            sleep 1
-            count=$((count + 1))
-            log_msg "waiting process terminal... (${count}s/10s)"
-        done
-
-        if check_process "${pid}"; then
-            log_msg "send KILL signal to PID:${pid}..."
-            kill -KILL "${pid}"
-            sleep 1
-            rm -f "${PID_FILE}"
-        else
-            log_msg "process killed... "
-        fi
+unload_module() {
+    if ! module_loaded; then
+        return 0
     fi
 
-    return 0
+    log_msg "Unloading ${MODULE_NAME}"
+    rmmod "${MODULE_NAME}" || {
+        report_error "Failed to unload ${MODULE_NAME}"
+        return 1
+    }
 }
 
-check_process() {
-    local pid=$1
-    if kill -0 "${pid}" 2>/dev/null; then
-        return 0  # process exist
-    else
-        return 1  # process not exist
+check_status() {
+    local module_file
+
+    module_file="$(package_module_file)" || return 1
+    verify_module_file "${module_file}" || return 1
+
+    if ! module_loaded; then
+        report_error "Package module ${MODULE_NAME} is not loaded"
+        return 1
     fi
 }
 
-status() {
-    if [ -f "${PID_FILE}" ]; then
-        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
-        if check_process "${pid}"; then
-            return 0
-        else
-            # Process is not running but pidfile exists - clean it up
-            rm -f "${PID_FILE}"
-        fi    
-    fi
-
-    return 1
+main() {
+    case "${1:-}" in
+    start)
+        uname -a
+        log_msg "kernel_info $(uname -r) $(kernel_build_num)"
+        load_module
+        ;;
+    stop)
+        unload_module
+        ;;
+    status)
+        check_status || return 3
+        ;;
+    *)
+        report_error "Unsupported command: ${1:-}"
+        return 1
+        ;;
+    esac
 }
 
-case $1 in
-start)
-    # run start command. exit 0 if success, exit 1 if failed
-    start_process
-    ;;
-stop)
-    # run stop command. exit 0 if success, exit 1 if failed
-    stop_process
-    ;;
-status)
-    # check application status command. exit 0 if running, exit 3 if not running
-    if status; then 
-        exit 0
-    else 
-        exit 3
-    fi
-    ;;
-*)
-    exit 1
-    ;;
-esac
+main "$@"

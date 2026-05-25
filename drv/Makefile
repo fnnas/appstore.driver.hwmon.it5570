@@ -18,7 +18,9 @@ endif
 endif
 
 DRIVER := it5570_hwmon
-GIT_COMMIT := $(shell git -C $(CURDIR)/.. rev-parse --short HEAD 2>/dev/null || echo none)
+DRIVER_DIR := $(if $(M),$(M),$(CURDIR))
+REPO_DIR := $(abspath $(DRIVER_DIR)/..)
+GIT_COMMIT := $(shell git -C $(REPO_DIR) rev-parse --short HEAD 2>/dev/null || echo none)
 
 obj-m := $(DRIVER).o
 $(DRIVER)-y := it5570_main.o it5570_core.o it5570_sensors.o

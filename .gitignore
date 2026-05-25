@@ -12,3 +12,11 @@
 /tmp
 
 .sisyphus
+.claude
+
+# CI packaging artifacts
+/*.tgz
+/release-assets/
+/package/app.tgz
+/package/app/*
+!/package/app/.gitkeep

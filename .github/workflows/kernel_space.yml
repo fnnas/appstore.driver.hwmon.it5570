@@ -1,0 +1,58 @@
+name: Kernel Space
+
+permissions:
+  contents: read
+  actions: write
+
+on:
+  workflow_call:
+    inputs:
+      package_name:
+        required: true
+        type: string
+        default: "appstore.driver.hwmon.it5570"
+      driver_revision:
+        required: true
+        type: string
+      kernel_name:
+        required: true
+        type: string
+      kernel_ver:
+        required: true
+        type: string
+      container_image:
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ inputs.container_image }}
+      options: -v ${{ github.workspace }}:${{ github.workspace }}
+    env:
+      kernel_name: ${{ inputs.kernel_name }}
+      kernel_ver: ${{ inputs.kernel_ver }}
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v6
+
+      - name: Build IT5570 hwmon module
+        run: |
+          make -C drv TARGET="${kernel_ver}" GIT_COMMIT="${{ inputs.driver_revision }}" -j"$(nproc)"
+          test -f drv/it5570_hwmon.ko
+          modinfo drv/it5570_hwmon.ko
+          test "$(modinfo -F revision drv/it5570_hwmon.ko)" = "${{ inputs.driver_revision }}"
+
+      - name: Collect built kernel module artifact
+        run: |
+          module_dir="artifact/app/${{ inputs.package_name }}_${{ inputs.kernel_name }}"
+          mkdir -p "${module_dir}"
+          cp drv/it5570_hwmon.ko "${module_dir}/"
+          ls -la "${module_dir}/"
+
+      - name: Upload kernel module artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.package_name }}-${{ env.kernel_name }}
+          path: artifact
