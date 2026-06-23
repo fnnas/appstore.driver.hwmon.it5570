@@ -7,7 +7,7 @@ PROJ_NAME="appstore.driver.hwmon.it5570"
 MODULE_NAME="it5570_hwmon"
 MODULE_FILE="${MODULE_NAME}.ko"
 EXPECTED_REVISION="this_pack_driver_revision"
-SUPPORTED_KERNEL_VER="6.18.18-trim"
+SUPPORTED_KERNEL_VERS="6.18.18-trim 6.18.18.c788-trim"
 
 log_msg() {
     local msg="$1"
@@ -42,6 +42,19 @@ kernel_build_num() {
     uname -v | sed -n 's/.*#\([0-9][0-9]*\).*/\1/p' | head -n 1
 }
 
+is_supported_kernel() {
+    local kernel_ver="$1"
+    local supported
+
+    for supported in ${SUPPORTED_KERNEL_VERS}; do
+        if [[ "${kernel_ver}" == "${supported}" ]]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 package_module_file() {
     local kernel_ver
     local build_num
@@ -51,21 +64,9 @@ package_module_file() {
     kernel_ver="$(uname -r)"
     build_num="$(kernel_build_num)"
 
-    if [[ "${kernel_ver}" != "${SUPPORTED_KERNEL_VER}" ]]; then
-        report_error "Unsupported kernel version: ${kernel_ver}; supported: ${SUPPORTED_KERNEL_VER}"
+    if ! is_supported_kernel "${kernel_ver}"; then
+        report_error "Unsupported kernel version: ${kernel_ver}; supported: ${SUPPORTED_KERNEL_VERS}"
         return 1
-    fi
-    if [[ ! "${build_num}" =~ ^[0-9]+$ ]]; then
-        report_error "Unsupported kernel build number for ${kernel_ver}: ${build_num}"
-        return 1
-    fi
-
-    if (( build_num < 570 )); then
-        build_tag="427"
-    elif (( build_num < 587 )); then
-        build_tag="570"
-    else
-        build_tag="587"
     fi
 
     case "$(uname -m)" in
@@ -77,7 +78,27 @@ package_module_file() {
         ;;
     esac
 
-    echo "${PACKAGE_BASE}/app/${PROJ_NAME}_${kernel_ver}-${build_tag}-${arch}/${MODULE_FILE}"
+    case "${kernel_ver}" in
+    6.18.18-trim)
+        if [[ ! "${build_num}" =~ ^[0-9]+$ ]]; then
+            report_error "Unsupported kernel build number for ${kernel_ver}: ${build_num}"
+            return 1
+        fi
+
+        if (( build_num < 570 )); then
+            build_tag="427"
+        elif (( build_num < 587 )); then
+            build_tag="570"
+        else
+            build_tag="587"
+        fi
+
+        echo "${PACKAGE_BASE}/app/${PROJ_NAME}_${kernel_ver}-${build_tag}-${arch}/${MODULE_FILE}"
+        ;;
+    6.18.18.c788-trim)
+        echo "${PACKAGE_BASE}/app/${PROJ_NAME}_${kernel_ver}-${arch}/${MODULE_FILE}"
+        ;;
+    esac
 }
 
 verify_module_file() {
