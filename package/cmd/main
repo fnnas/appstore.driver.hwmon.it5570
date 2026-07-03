@@ -7,7 +7,7 @@ PROJ_NAME="appstore.driver.hwmon.it5570"
 MODULE_NAME="it5570_hwmon"
 MODULE_FILE="${MODULE_NAME}.ko"
 EXPECTED_REVISION="this_pack_driver_revision"
-SUPPORTED_KERNEL_VERS="6.18.18-trim 6.18.18.c788-trim"
+SUPPORTED_KERNEL_VERS="6.18.18-trim 6.18.18.c788-trim 6.18.18.c877-trim"
 
 log_msg() {
     local msg="$1"
@@ -95,7 +95,7 @@ package_module_file() {
 
         echo "${PACKAGE_BASE}/app/${PROJ_NAME}_${kernel_ver}-${build_tag}-${arch}/${MODULE_FILE}"
         ;;
-    6.18.18.c788-trim)
+    6.18.18.c788-trim | 6.18.18.c877-trim)
         echo "${PACKAGE_BASE}/app/${PROJ_NAME}_${kernel_ver}-${arch}/${MODULE_FILE}"
         ;;
     esac

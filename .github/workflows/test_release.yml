@@ -62,6 +62,9 @@ jobs:
           - kernel_name: "6.18.18.c788-trim-amd64"
             kernel_ver: "6.18.18.c788-trim"
             container_image: "makedie/fnos:kernHead-6.18.18.c788-trim-amd64"
+          - kernel_name: "6.18.18.c877-trim-amd64"
+            kernel_ver: "6.18.18.c877-trim"
+            container_image: "makedie/fnos:kernHead-6.18.18.c877-trim-amd64"
     with:
       package_name: ${{ needs.setup.outputs.package_name }}
       driver_revision: ${{ needs.setup.outputs.driver_revision }}
@@ -89,7 +92,7 @@ jobs:
         run: |
           sed "s/this_pack_manifest_version/${{ needs.setup.outputs.this_pack_version }}/g" -i package/manifest
           sed "s/this_pack_manifest_platform/x86/g" -i package/manifest
-          sed "s/this_pack_manifest_kernel/6.18.18-trim-427-amd64、6.18.18-trim-570-amd64、6.18.18-trim-587-amd64、6.18.18.c788-trim-amd64/g" -i package/manifest
+          sed "s/this_pack_manifest_kernel/6.18.18-trim-427-amd64、6.18.18-trim-570-amd64、6.18.18-trim-587-amd64、6.18.18.c788-trim-amd64、6.18.18.c877-trim-amd64/g" -i package/manifest
           sed "s/this_pack_driver_revision/${{ needs.setup.outputs.driver_revision }}/g" -i package/cmd/main
 
       - name: Create app payload archive
