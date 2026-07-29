@@ -1,0 +1,95 @@
+#!/bin/bash
+
+set -euo pipefail
+
+kernel_ver=${1:?Kernel version is required}
+source_dir=${2:?Driver source directory is required}
+output_dir=${3:?Output directory is required}
+driver_revision=${4:?Driver revision is required}
+
+module_file="it5570_hwmon.ko"
+work_base="${TRIM_PKGVAR:-/tmp}"
+work_dir="$(mktemp -d "${work_base%/}/it5570-chroot.XXXXXX")"
+root_dir="${work_dir}/root"
+root_mounted=false
+dev_mounted=false
+proc_mounted=false
+output_tmp=""
+
+cleanup() {
+	local status=$?
+
+	trap - EXIT
+	set +e
+	if ${proc_mounted}; then
+		umount -l "${root_dir}/proc" 2>/dev/null
+	fi
+	if ${dev_mounted}; then
+		umount -l "${root_dir}/dev" 2>/dev/null
+	fi
+	if ${root_mounted}; then
+		umount -l "${root_dir}" 2>/dev/null
+	fi
+	if [[ -n "${output_tmp}" ]]; then
+		rm -f -- "${output_tmp}"
+	fi
+	if [[ -n "${work_dir}" && "${work_dir}" != "/" ]]; then
+		rm -rf -- "${work_dir}"
+	fi
+	exit "${status}"
+}
+trap cleanup EXIT
+
+if [[ "${source_dir}" != /* || "${output_dir}" != /* ]]; then
+	echo "Source and output directories must be absolute paths." >&2
+	exit 1
+fi
+
+if [[ ! -f "${source_dir}/Makefile" ]]; then
+	echo "Driver source Makefile not found: ${source_dir}/Makefile" >&2
+	exit 1
+fi
+
+mkdir -p "${work_dir}/upper" "${work_dir}/work" "${root_dir}"
+mount -t overlay overlay \
+	-o "lowerdir=/,upperdir=${work_dir}/upper,workdir=${work_dir}/work" \
+	"${root_dir}"
+root_mounted=true
+
+mount --bind /dev "${root_dir}/dev"
+dev_mounted=true
+mount -t proc proc "${root_dir}/proc"
+proc_mounted=true
+
+rm -f "${root_dir}/etc/resolv.conf"
+cp -L /etc/resolv.conf "${root_dir}/etc/resolv.conf"
+
+echo "Building ${module_file} for ${kernel_ver} inside chroot"
+chroot "${root_dir}" /bin/bash -s -- \
+	"${source_dir}" "${kernel_ver}" "${driver_revision}" <<'CHROOT_BUILD'
+set -euo pipefail
+
+source_dir=$1
+kernel_ver=$2
+driver_revision=$3
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y --no-install-recommends build-essential bc
+make -C "${source_dir}" TARGET="${kernel_ver}" \
+	GIT_COMMIT="${driver_revision}" -j"$(nproc)"
+CHROOT_BUILD
+
+built_module="${root_dir}${source_dir}/${module_file}"
+if [[ ! -f "${built_module}" ]]; then
+	echo "Build completed without producing ${module_file}." >&2
+	exit 1
+fi
+
+mkdir -p "${output_dir}"
+output_tmp="$(mktemp "${output_dir}/.${module_file}.XXXXXX")"
+cp -f -- "${built_module}" "${output_tmp}"
+chmod 0644 "${output_tmp}"
+mv -f -- "${output_tmp}" "${output_dir}/${module_file}"
+output_tmp=""
+echo "Stored ${module_file} in ${output_dir}"

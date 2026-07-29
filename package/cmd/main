@@ -1,187 +1,251 @@
 #!/bin/bash
 
-LOG_FILE="${TRIM_PKGVAR:-/tmp}/info.log"
-PACKAGE_BASE="${TRIM_APPDEST:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=package/cmd/common
+. "${SCRIPT_DIR}/common"
+
+PACKAGE_BASE="${TRIM_APPDEST:-$(CDPATH='' cd -- "${SCRIPT_DIR}/.." && pwd)}"
 
 PROJ_NAME="appstore.driver.hwmon.it5570"
 MODULE_NAME="it5570_hwmon"
 MODULE_FILE="${MODULE_NAME}.ko"
 EXPECTED_REVISION="this_pack_driver_revision"
-SUPPORTED_KERNEL_VERS="6.18.18-trim 6.18.18.c788-trim 6.18.18.c877-trim"
-
-log_msg() {
-    local msg="$1"
-    local line
-
-    line="$(date '+%Y-%m-%d %H:%M:%S') - ${msg}"
-    echo "${line}"
-    mkdir -p "$(dirname "${LOG_FILE}")"
-    echo "${line}" >> "${LOG_FILE}"
-}
-
-report_error() {
-    local msg="$1"
-
-    log_msg "${msg}"
-    if [[ -n "${TRIM_TEMP_LOGFILE:-}" ]]; then
-        mkdir -p "$(dirname "${TRIM_TEMP_LOGFILE}")"
-        printf "%s\n" "${msg}" > "${TRIM_TEMP_LOGFILE}"
-    fi
-}
+CHROOT_BUILD_SCRIPT="${CHROOT_BUILD_SCRIPT:-${SCRIPT_DIR}/build_module_chroot}"
+BUILD_SOURCE_DIR="${BUILD_SOURCE_DIR:-${PACKAGE_BASE}/app/it5570-source}"
 
 module_loaded() {
-    lsmod | awk '{print $1}' | grep -qx "${MODULE_NAME}"
+	lsmod | awk '{print $1}' | grep -qx "${MODULE_NAME}"
 }
 
 print_recent_dmesg() {
-    log_msg "Recent dmesg tail"
-    dmesg | tail -n 20 || true
+	log_msg "Recent dmesg tail"
+	dmesg | tail -n 20 || true
 }
 
 kernel_build_num() {
-    uname -v | sed -n 's/.*#\([0-9][0-9]*\).*/\1/p' | head -n 1
+	uname -v | sed -n 's/.*#\([0-9][0-9]*\).*/\1/p' | head -n 1
 }
 
-is_supported_kernel() {
-    local kernel_ver="$1"
-    local supported
+package_arch() {
+	case "$(uname -m)" in
+	x86_64 | amd64)
+		printf '%s\n' "amd64"
+		;;
+	aarch64 | arm64)
+		printf '%s\n' "arm64"
+		;;
+	*)
+		report_error "Unsupported architecture: $(uname -m)"
+		return 1
+		;;
+	esac
+}
 
-    for supported in ${SUPPORTED_KERNEL_VERS}; do
-        if [[ "${kernel_ver}" == "${supported}" ]]; then
-            return 0
-        fi
-    done
+prebuilt_module_file() {
+	local kernel_ver="$1"
+	local build_num="$2"
+	local arch="$3"
+	local build_tag
 
-    return 1
+	case "${kernel_ver}" in
+	6.18.18-trim)
+		if [[ ! "${build_num}" =~ ^[0-9]+$ ]]; then
+			return 1
+		fi
+
+		if (( build_num < 570 )); then
+			build_tag="427"
+		elif (( build_num < 587 )); then
+			build_tag="570"
+		elif (( build_num < 717 )); then
+			build_tag="587"
+		else
+			return 1
+		fi
+
+		printf '%s\n' "${PACKAGE_BASE}/app/${PROJ_NAME}_${kernel_ver}-${build_tag}-${arch}/${MODULE_FILE}"
+		;;
+	6.18.18.c788-trim | 6.18.18.c877-trim)
+		printf '%s\n' "${PACKAGE_BASE}/app/${PROJ_NAME}_${kernel_ver}-${arch}/${MODULE_FILE}"
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
+local_build_module_file() {
+	local kernel_ver="$1"
+	local arch="$2"
+
+	printf '%s\n' "${PACKAGE_BASE}/app/${PROJ_NAME}_${kernel_ver}-${arch}/${MODULE_FILE}"
 }
 
 package_module_file() {
-    local kernel_ver
-    local build_num
-    local build_tag
-    local arch
+	local kernel_ver
+	local build_num
+	local arch
+	local prebuilt_file
 
-    kernel_ver="$(uname -r)"
-    build_num="$(kernel_build_num)"
+	kernel_ver="$(uname -r)"
+	build_num="$(kernel_build_num)"
+	arch="$(package_arch)" || return 1
 
-    if ! is_supported_kernel "${kernel_ver}"; then
-        report_error "Unsupported kernel version: ${kernel_ver}; supported: ${SUPPORTED_KERNEL_VERS}"
-        return 1
-    fi
+	if prebuilt_file="$(prebuilt_module_file "${kernel_ver}" "${build_num}" "${arch}")" &&
+	   [[ -f "${prebuilt_file}" ]]; then
+		printf '%s\n' "${prebuilt_file}"
+		return 0
+	fi
 
-    case "$(uname -m)" in
-    x86_64 | amd64) arch="amd64" ;;
-    aarch64 | arm64) arch="arm64" ;;
-    *)
-        report_error "Unsupported architecture: $(uname -m)"
-        return 1
-        ;;
-    esac
-
-    case "${kernel_ver}" in
-    6.18.18-trim)
-        if [[ ! "${build_num}" =~ ^[0-9]+$ ]]; then
-            report_error "Unsupported kernel build number for ${kernel_ver}: ${build_num}"
-            return 1
-        fi
-
-        if (( build_num < 570 )); then
-            build_tag="427"
-        elif (( build_num < 587 )); then
-            build_tag="570"
-        else
-            build_tag="587"
-        fi
-
-        echo "${PACKAGE_BASE}/app/${PROJ_NAME}_${kernel_ver}-${build_tag}-${arch}/${MODULE_FILE}"
-        ;;
-    6.18.18.c788-trim | 6.18.18.c877-trim)
-        echo "${PACKAGE_BASE}/app/${PROJ_NAME}_${kernel_ver}-${arch}/${MODULE_FILE}"
-        ;;
-    esac
+	local_build_module_file "${kernel_ver}" "${arch}"
 }
 
 verify_module_file() {
-    local module_file="$1"
-    local revision
+	local module_file="$1"
+	local revision
 
-    if [[ ! -f "${module_file}" ]]; then
-        report_error "Package module not found: ${module_file}"
-        return 1
-    fi
+	if [[ ! -f "${module_file}" ]]; then
+		report_error "Package module not found: ${module_file}"
+		return 1
+	fi
 
-    revision="$(modinfo -F revision "${module_file}" 2>/dev/null)" || {
-        report_error "Unable to read module revision from ${module_file}"
-        return 1
-    }
-    if [[ "${revision}" != "${EXPECTED_REVISION}" ]]; then
-        report_error "Unexpected module revision: ${revision}; expected: ${EXPECTED_REVISION}"
-        return 1
-    fi
+	revision="$(modinfo -F revision "${module_file}" 2>/dev/null)" || {
+		report_error "Unable to read module revision from ${module_file}"
+		return 1
+	}
+	if [[ "${revision}" != "${EXPECTED_REVISION}" ]]; then
+		report_error "Unexpected module revision: ${revision}; expected: ${EXPECTED_REVISION}"
+		return 1
+	fi
+}
+
+create_build_failure_lock() {
+	local kernel_ver="$1"
+
+	if ! (
+		set -o noclobber
+		printf 'kernel=%s\nstarted_at=%s\n' \
+			"${kernel_ver}" "$(date -Iseconds)" > "${BUILD_FAILURE_LOCK}"
+	) 2>/dev/null; then
+		if [[ -f "${BUILD_FAILURE_LOCK}" ]]; then
+			report_build_locked
+		else
+			report_error "Unable to create the chroot build failure lock: ${BUILD_FAILURE_LOCK}"
+		fi
+		return 1
+	fi
+}
+
+report_build_locked() {
+	report_error "A previous chroot build failed or another build is already in progress, so another resource-intensive build will not be attempted. Restart the device to clear /tmp, or manually delete ${BUILD_FAILURE_LOCK} before trying again."
+}
+
+build_module_file() {
+	local kernel_ver="$1"
+	local module_file="$2"
+	local output_dir
+
+	if [[ -f "${BUILD_FAILURE_LOCK}" ]]; then
+		report_build_locked
+		return 1
+	fi
+
+	if [[ ! -f "${CHROOT_BUILD_SCRIPT}" ]]; then
+		report_error "Chroot build script not found: ${CHROOT_BUILD_SCRIPT}"
+		return 1
+	fi
+
+	if [[ ! -f "${BUILD_SOURCE_DIR}/Makefile" ]]; then
+		report_error "Packaged IT5570 driver source not found: ${BUILD_SOURCE_DIR}"
+		return 1
+	fi
+
+	create_build_failure_lock "${kernel_ver}" || return 1
+	output_dir="$(dirname "${module_file}")"
+	log_msg "No prebuilt ${MODULE_NAME} module found for ${kernel_ver}; starting chroot build"
+
+	if ! run_with_logs bash "${CHROOT_BUILD_SCRIPT}" \
+		"${kernel_ver}" "${BUILD_SOURCE_DIR}" "${output_dir}" "${EXPECTED_REVISION}"; then
+		report_error "Failed to build ${MODULE_NAME} for kernel ${kernel_ver} in chroot."
+		return 1
+	fi
+
+	if ! verify_module_file "${module_file}"; then
+		rm -f -- "${module_file}"
+		report_error "The chroot build did not produce a valid ${MODULE_NAME} module for kernel ${kernel_ver}."
+		return 1
+	fi
+
+	clear_build_failure_lock || return 1
+	log_msg "Stored locally built module at ${module_file}"
 }
 
 load_module() {
-    local module_file
+	local module_file
 
-    if module_loaded; then
-        log_msg "${MODULE_NAME} is already loaded"
-        return 0
-    fi
+	module_file="$(package_module_file)" || return 1
+	if [[ ! -f "${module_file}" ]]; then
+		build_module_file "$(uname -r)" "${module_file}" || return 1
+	fi
 
-    module_file="$(package_module_file)" || return 1
-    verify_module_file "${module_file}" || return 1
+	verify_module_file "${module_file}" || return 1
+	if module_loaded; then
+		log_msg "${MODULE_NAME} is already loaded"
+		return 0
+	fi
 
-    log_msg "Loading ${MODULE_NAME} from ${module_file}"
-    insmod "${module_file}" || {
-        report_error "Failed to load ${MODULE_NAME} from ${module_file}"
-        print_recent_dmesg
-        return 1
-    }
-    print_recent_dmesg
+	log_msg "Loading ${MODULE_NAME} from ${module_file}"
+	insmod "${module_file}" || {
+		report_error "Failed to load ${MODULE_NAME} from ${module_file}"
+		print_recent_dmesg
+		return 1
+	}
+	print_recent_dmesg
 }
 
 unload_module() {
-    if ! module_loaded; then
-        return 0
-    fi
+	if ! module_loaded; then
+		return 0
+	fi
 
-    log_msg "Unloading ${MODULE_NAME}"
-    rmmod "${MODULE_NAME}" || {
-        report_error "Failed to unload ${MODULE_NAME}"
-        return 1
-    }
+	log_msg "Unloading ${MODULE_NAME}"
+	rmmod "${MODULE_NAME}" || {
+		report_error "Failed to unload ${MODULE_NAME}"
+		return 1
+	}
 }
 
 check_status() {
-    local module_file
+	local module_file
 
-    module_file="$(package_module_file)" || return 1
-    verify_module_file "${module_file}" || return 1
+	module_file="$(package_module_file)" || return 1
+	verify_module_file "${module_file}" || return 1
 
-    if ! module_loaded; then
-        report_error "Package module ${MODULE_NAME} is not loaded"
-        return 1
-    fi
+	if ! module_loaded; then
+		report_error "Package module ${MODULE_NAME} is not loaded"
+		return 1
+	fi
 }
 
 main() {
-    case "${1:-}" in
-    start)
-        uname -a
-        log_msg "kernel_info $(uname -r) $(kernel_build_num)"
-        load_module
-        ;;
-    stop)
-        unload_module
-        ;;
-    status)
-        check_status || return 3
-        ;;
-    *)
-        report_error "Unsupported command: ${1:-}"
-        return 1
-        ;;
-    esac
+	case "${1:-}" in
+	start)
+		reset_user_visible_log
+		uname -a
+		log_msg "kernel_info $(uname -r) $(kernel_build_num)"
+		load_module
+		;;
+	stop)
+		unload_module
+		;;
+	status)
+		check_status || return 3
+		;;
+	*)
+		report_error "Unsupported command: ${1:-}"
+		return 1
+		;;
+	esac
 }
 
 main "$@"

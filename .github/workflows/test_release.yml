@@ -20,7 +20,7 @@ on:
 
 env:
   package_name: "appstore.driver.hwmon.it5570"
-  this_pack_version: "1.0.1"
+  this_pack_version: "1.0.2"
 
 jobs:
   setup:
@@ -94,6 +94,12 @@ jobs:
           sed "s/this_pack_manifest_platform/x86/g" -i package/manifest
           sed "s/this_pack_manifest_kernel/6.18.18-trim-427-amd64、6.18.18-trim-570-amd64、6.18.18-trim-587-amd64、6.18.18.c788-trim-amd64、6.18.18.c877-trim-amd64/g" -i package/manifest
           sed "s/this_pack_driver_revision/${{ needs.setup.outputs.driver_revision }}/g" -i package/cmd/main
+
+      - name: Stage driver source for local chroot builds
+        run: |
+          source_dir="package/app/it5570-source"
+          mkdir -p "${source_dir}"
+          cp drv/Makefile drv/*.c drv/*.h "${source_dir}/"
 
       - name: Create app payload archive
         run: |

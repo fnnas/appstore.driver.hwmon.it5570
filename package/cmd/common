@@ -1,0 +1,52 @@
+#!/bin/bash
+
+LOG_FILE="${LOG_FILE:-${TRIM_PKGVAR:-/tmp}/info.log}"
+BUILD_FAILURE_LOCK="${IT5570_BUILD_FAILURE_LOCK:-/tmp/it5570-chroot-build.failed}"
+
+log_msg() {
+	local msg="$1"
+	local line
+
+	line="$(date '+%Y-%m-%d %H:%M:%S') - ${msg}"
+	mkdir -p "$(dirname "${LOG_FILE}")"
+	printf '%s\n' "${line}"
+	printf '%s\n' "${line}" >> "${LOG_FILE}"
+}
+
+reset_user_visible_log() {
+	if [[ -n "${TRIM_TEMP_LOGFILE:-}" ]]; then
+		mkdir -p "$(dirname "${TRIM_TEMP_LOGFILE}")"
+		: > "${TRIM_TEMP_LOGFILE}"
+	fi
+}
+
+report_error() {
+	local msg="$1"
+
+	log_msg "ERROR: ${msg}" >&2
+	if [[ -n "${TRIM_TEMP_LOGFILE:-}" ]]; then
+		mkdir -p "$(dirname "${TRIM_TEMP_LOGFILE}")"
+		printf '%s\n' "${msg}" >> "${TRIM_TEMP_LOGFILE}"
+	fi
+}
+
+run_with_logs() {
+	local command_status
+
+	mkdir -p "$(dirname "${LOG_FILE}")"
+	if [[ -z "${TRIM_TEMP_LOGFILE:-}" || "${TRIM_TEMP_LOGFILE}" == "${LOG_FILE}" ]]; then
+		"$@" 2>&1 | tee -a "${LOG_FILE}"
+	else
+		mkdir -p "$(dirname "${TRIM_TEMP_LOGFILE}")"
+		"$@" 2>&1 | tee -a "${LOG_FILE}" "${TRIM_TEMP_LOGFILE}"
+	fi
+	command_status=${PIPESTATUS[0]}
+	return "${command_status}"
+}
+
+clear_build_failure_lock() {
+	if ! rm -f -- "${BUILD_FAILURE_LOCK}"; then
+		report_error "Unable to clear the chroot build failure lock: ${BUILD_FAILURE_LOCK}"
+		return 1
+	fi
+}
